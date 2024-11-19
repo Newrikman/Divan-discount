@@ -68,11 +68,7 @@ def redeem(update: Update, context: CallbackContext):
 
 # Команда /help
 def help_command(update: Update, context: CallbackContext):
-    commands = "/start - Начать работу
-/balance - Проверить баланс
-/addpoints [число] - Добавить баллы
-/redeem [число] - Списать баллы
-/help - Список команд"
+    commands = "/start - Начать работу/balance - Проверить баланс/addpoints [число] - Добавить баллы/redeem [число] - Списать баллы/help - Список команд"
     update.message.reply_text(f"Доступные команды:\n{commands}")
 
 # Основной код бота
