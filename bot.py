@@ -1,66 +1,113 @@
 import sqlite3
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
-import os
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-# Функция для получения подключения к базе данных
-def get_db_connection():
-    conn = sqlite3.connect("users.db")
-    return conn
+# Подключение к базе данных
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
 
-# Создание таблицы для хранения данных о пользователях
-def initialize_database():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        balance INTEGER DEFAULT 0
+# Создание таблицы пользователей
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER UNIQUE,
+    name TEXT,
+    surname TEXT,
+    birth_date TEXT,
+    phone TEXT,
+    total_spent REAL DEFAULT 0,
+    discount INTEGER DEFAULT 0
+)
+""")
+conn.commit()
+
+# Функция для регистрации пользователя
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Добро пожаловать! Для регистрации отправьте свои данные в формате:\n"
+        "Имя Фамилия Дата_рождения Номер_телефона\n"
+        "Пример: Иван Иванов 1990-01-01 +998901234567"
     )
-    """)
-    conn.commit()
-    conn.close()
 
-# Регистрация пользователя в базе данных
-def register_user(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
+async def register_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = update.message.text.split()
+        name, surname, birth_date, phone = data
+        telegram_id = update.message.from_user.id
 
-# Проверка регистрации пользователя
-def is_registered(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+        cursor.execute("""
+        INSERT OR IGNORE INTO users (telegram_id, name, surname, birth_date, phone)
+        VALUES (?, ?, ?, ?, ?)
+        """, (telegram_id, name, surname, birth_date, phone))
+        conn.commit()
+
+        await update.message.reply_text("Вы успешно зарегистрированы!")
+    except Exception as e:
+        await update.message.reply_text("Ошибка регистрации. Проверьте формат данных.")
+
+async def add_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        telegram_id = update.message.from_user.id
+        amount = float(update.message.text.split()[1])
+
+        cursor.execute("SELECT total_spent FROM users WHERE telegram_id = ?", (telegram_id,))
+        result = cursor.fetchone()
+
+        if result:
+            total_spent = result[0] + amount
+
+            # Рассчитываем скидку
+            if total_spent >= 20000000:
+                discount = 20
+            elif total_spent >= 15000000:
+                discount = 15
+            elif total_spent >= 10000000:
+                discount = 10
+            elif total_spent >= 5000000:
+                discount = 5
+            else:
+                discount = 0
+
+            # Обновляем данные
+            cursor.execute("""
+            UPDATE users
+            SET total_spent = ?, discount = ?
+            WHERE telegram_id = ?
+            """, (total_spent, discount, telegram_id))
+            conn.commit()
+
+            await update.message.reply_text(
+                f"Чек добавлен! Всего потрачено: {total_spent} сум. Ваша скидка: {discount}%."
+            )
+        else:
+            await update.message.reply_text("Вы не зарегистрированы. Введите /start для регистрации.")
+    except Exception as e:
+        await update.message.reply_text("Ошибка при добавлении чека. Введите сумму в формате: /add сумма.")
+
+async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.message.from_user.id
+    cursor.execute("SELECT name, total_spent, discount FROM users WHERE telegram_id = ?", (telegram_id,))
     result = cursor.fetchone()
-    conn.close()
-    return result is not None
 
-# Команда /start
-def start(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    register_user(user_id)
-    update.message.reply_text("Добро пожаловать в систему! Используйте /balance для проверки баланса.")
-
-# Команда /balance
-def balance(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if not is_registered(user_id):
-        update.message.reply_text("Вы не зарегистрированы. Введите /start для регистрации.")
-        return
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
     if result:
-        balance = result[0]
-        update.message.reply_text(f"Ваш текущий баланс: {balance} баллов.")
+        name, total_spent, discount = result
+        await update.message.reply_text(
+            f"Имя: {name}\nВсего потрачено: {total_spent} сум\nВаша скидка: {discount}%."
+        )
     else:
-        update.message.reply_text("Произошла ошибка. Попробуйте снова.")
+        await update.message.reply_text("Вы не зарегистрированы. Введите /start для регистрации.")
 
-# Команда /addpoints
-def add_points(update: Update,
+# Основная функция
+def main():
+    app = ApplicationBuilder().token("8017053987:AAE9vEiYCFmAZd4KeQ1eRuCjNgCbnKHWKhk").build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, register_user))
+    app.add_handler(CommandHandler("add", add_receipt))
+    app.add_handler(CommandHandler("status", check_status))
+
+    print("Бот запущен!")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
